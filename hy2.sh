@@ -277,6 +277,7 @@ EOF
 
 sysctl --system >/dev/null
 
+
 # 保存网卡和 IPv6 地址
 {
     printf 'NIC=%q\n' "$NIC"
@@ -286,7 +287,8 @@ sysctl --system >/dev/null
 
 chmod 600 "$IPV6_ENV"
 
-
+# 生成 IPv6 开机恢复脚本
+cat > "$IPV6_APPLY" <<'EOF'
 #!/usr/bin/env bash
 set -e
 
@@ -316,28 +318,29 @@ if [[ -n "${IPV6_GW:-}" ]]; then
         ip -6 route replace default via "$IPV6_GW" dev "$NIC" onlink
     fi
 fi
-
-#!/usr/bin/env bash
-set -e
-
-source /etc/hy2-ipv6.env
-
-for i in $(seq 1 30); do
-    if ip link show dev "$NIC" >/dev/null 2>&1; then
-        break
-    fi
-    sleep 1
-done
-
-ip link show dev "$NIC" >/dev/null 2>&1 || exit 1
-
-sysctl -w net.ipv6.conf.all.disable_ipv6=0 >/dev/null
-sysctl -w net.ipv6.conf.default.disable_ipv6=0 >/dev/null
-sysctl -w "net.ipv6.conf.${NIC}.disable_ipv6=0" >/dev/null
-sysctl -w "net.ipv6.conf.${NIC}.accept_ra=2" >/dev/null
-
-ip -6 addr replace "$IPV6_CIDR" dev "$NIC"
 EOF
+
+chmod 700 "$IPV6_APPLY"
+
+# 生成 systemd 服务
+cat > "$IPV6_SERVICE" <<EOF
+[Unit]
+Description=Hy2 IPv6 Address Persistence
+Wants=network-online.target
+After=network-online.target systemd-sysctl.service
+
+[Service]
+Type=oneshot
+ExecStart=${IPV6_APPLY}
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable hy2-ipv6.service
+
 
 chmod 700 "$IPV6_APPLY"
 
