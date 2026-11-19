@@ -575,53 +575,28 @@ chmod 644 "$CERT_CRT"
 # 动态配置 Hysteria 2 用户账号
 # ------------------------------------------------------------
 
-log "开始配置 Hysteria 2 用户认证..."
+log "开始自动生成 Hysteria 2 用户账号..."
 
-read -r -p "请输入需要创建的账号数量（1-20）: " USER_COUNT </dev/tty
-
-if [[ ! "$USER_COUNT" =~ ^([1-9]|1[0-9]|20)$ ]]; then
-    fail "账号数量必须是 1-20 之间的整数"
-fi
+# 每次运行自动生成 1 组随机账号和密码
+USER_COUNT=1
 
 declare -A HY2_USERS
 HY2_USER_SUMMARY=""
 
-for ((i=1; i<=USER_COUNT; i++)); do
-    echo
-    echo "===== 配置第 $i 个账号 ====="
+# 随机生成用户名：hy2-加8位随机十六进制字符
+USERNAME="hy2-$(openssl rand -hex 4)"
 
-    while true; do
-        read -r -p "请输入用户名: " USERNAME </dev/tty
+# 随机生成32位十六进制密码
+PASSWORD="$(openssl rand -hex 16)"
 
-        if [[ ! "$USERNAME" =~ ^[A-Za-z0-9_-]{1,32}$ ]]; then
-            echo "用户名只能使用字母、数字、下划线和连字符，长度 1-32 位"
-            continue
-        fi
+# 保存账号密码
+HY2_USERS["$USERNAME"]="$PASSWORD"
 
-        if [[ -n "${HY2_USERS[$USERNAME]+exists}" ]]; then
-            echo "用户名重复，请重新输入"
-            continue
-        fi
+# 保存最终输出信息
+HY2_USER_SUMMARY+="${USERNAME}: ${PASSWORD}"$'\n'
 
-        break
-    done
-
-    while true; do
-        read -r -s -p "请输入 $USERNAME 的密码（8-128位）: " PASSWORD </dev/tty
-        echo
-
-        if [[ ! "$PASSWORD" =~ ^[A-Za-z0-9_-]{8,128}$ ]]; then
-            echo "密码只能使用字母、数字、下划线和连字符，长度 8-128 位"
-            continue
-        fi
-
-        break
-    done
-
-    HY2_USERS["$USERNAME"]="$PASSWORD"
-    HY2_USER_SUMMARY+="${USERNAME}: ${PASSWORD}"$'\n'
-done
-
+log "随机账号生成成功"
+log "账号：$USERNAME"
 log "正在生成 Hy2 配置文件..."
 
 umask 077
