@@ -498,11 +498,122 @@ else
     fail "未找到 hysteria 用户，请检查 Hy2 安装结果"
 fi
 
+
 chmod 600 "$CERT_KEY"
 chmod 644 "$CERT_CRT"
-# 设置 Hy2 配置文件权限，确保 hysteria 用户可以读取
-chown root:hysteria /etc/hysteria/config.yaml
-chmod 640 /etc/hysteria/config.yaml
+
+# ------------------------------------------------------------
+# 动态配置 Hysteria 2 用户账号
+# ------------------------------------------------------------
+
+log "开始配置 Hysteria 2 用户认证..."
+
+read -r -p "请输入需要创建的账号数量（1-20）: " USER_COUNT </dev/tty
+
+if [[ ! "$USER_COUNT" =~ ^([1-9]|1[0-9]|20)$ ]]; then
+    fail "账号数量必须是 1-20 之间的整数"
+fi
+
+declare -A HY2_USERS
+
+for ((i=1; i<=USER_COUNT; i++)); do
+    echo
+    echo "===== 配置第 $i 个账号 ====="
+
+    while true; do
+        read -r -p "请输入用户名: " USERNAME </dev/tty
+
+        if [[ ! "$USERNAME" =~ ^[A-Za-z0-9_-]{1,32}$ ]]; then
+            echo "用户名只能使用字母、数字、下划线和连字符，长度 1-32 位"
+            continue
+        fi
+
+        if [[ -n "${HY2_USERS[$USERNAME]+exists}" ]]; then
+            echo "用户名重复，请重新输入"
+            continue
+        fi
+
+        break
+    done
+
+    while true; do
+        read -r -s -p "请输入 $USERNAME 的密码（8-128位）: " PASSWORD </dev/tty
+        echo
+
+        if [[ ! "$PASSWORD" =~ ^[A-Za-z0-9_-]{8,128}$ ]]; then
+            echo "密码只能使用字母、数字、下划线和连字符，长度 8-128 位"
+            continue
+        fi
+
+        break
+    done
+
+    HY2_USERS["$USERNAME"]="$PASSWORD"
+done
+
+log "正在生成 Hy2 配置文件..."
+
+umask 077
+
+{
+    cat << 'EOF'
+listen: :10086
+
+tls:
+  cert: /etc/hysteria/server.crt
+  key: /etc/hysteria/server.key
+
+quic:
+  initStreamReceiveWindow: 8388608
+  maxStreamReceiveWindow: 8388608
+  initConnReceiveWindow: 20971520
+  maxConnReceiveWindow: 20971520
+  maxIdleTimeout: 30s
+  maxIncomingStreams: 1024
+  disablePathMTUDiscovery: false
+
+ignoreClientBandwidth: false
+disableUDP: false
+udpIdleTimeout: 60s
+
+auth:
+  type: userpass
+  userpass:
+EOF
+
+    for username in "${!HY2_USERS[@]}"; do
+        printf '    "%s": "%s"\n' "$username" "${HY2_USERS[$username]}"
+    done
+
+    cat << 'EOF'
+
+resolver:
+  type: https
+  https:
+    addr: 1.1.1.1:443
+    timeout: 10s
+    sni: cloudflare-dns.com
+    insecure: false
+
+acl:
+  inline:
+    - reject(geoip:cn)
+
+masquerade:
+  type: proxy
+  proxy:
+    url: https://bing.com
+    rewriteHost: true
+EOF
+} > "$CERT_DIR/config.yaml"
+
+chown root:hysteria "$CERT_DIR/config.yaml"
+chmod 640 "$CERT_DIR/config.yaml"
+
+unset HY2_USERS PASSWORD USERNAME
+
+log "Hy2 配置文件生成完成，共创建 ${USER_COUNT} 个账号"
+
 
 # ------------------------------------------------------------
 # 生成并保存 Hy2 证书指纹
@@ -611,8 +722,10 @@ echo "只添加本脚本指定的端口规则"
 
 echo
 echo "【Hy2 配置文件】"
-echo "本脚本没有生成或覆盖 config.yaml"
-echo "请自行配置服务端参数"
+echo "$CERT_DIR/config.yaml"
+echo "账号数量：$USER_COUNT"
+echo "账号用户名："
+echo "$HY2_USER_NAMES"
 
 echo
 echo "【备份目录】"
@@ -620,7 +733,7 @@ echo "$BACKUP_DIR"
 
 echo
 echo "================================================"
-echo "请检查 Hy2 配置后，再启动服务。"
+echo "Hy2 服务已启动，并已设置开机自启。"
 echo "================================================"
 
 echo
