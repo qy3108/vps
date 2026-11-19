@@ -178,7 +178,7 @@ ip -6 addr replace "$IPV6_CIDR" dev "$NIC"
 
 
 # ------------------------------------------------------------
-# 7. IPv6 网关：RA 自动获取 → 邻居表识别 → 手动输入 → 跳过
+# 7. IPv6 网关：现有路由识别 → RA 自动获取 → 邻居表识别 → 手动输入 → 跳过
 # ------------------------------------------------------------
 
 IPV6_GW=""
@@ -189,13 +189,42 @@ echo "============================================"
 echo "          IPv6 网关配置"
 echo "============================================"
 
-# 检查是否已经存在默认路由
-CURRENT_ROUTE="$(ip -6 route show default dev "$NIC" | head -n 1)"
+# 统一配置 IPv6 默认路由
+set_ipv6_gateway() {
+    local gateway="$1"
+
+    if [[ "${gateway,,}" == fe80:* ]]; then
+        ip -6 route replace default via "$gateway" dev "$NIC"
+    else
+        ip -6 route replace default via "$gateway" dev "$NIC" onlink
+    fi
+}
+
+# 检查并提取当前默认路由中的网关
+CURRENT_ROUTE="$(ip -6 route show default dev "$NIC" | head -n 1 || true)"
 
 if [[ -n "$CURRENT_ROUTE" ]]; then
     echo "[INFO] 检测到现有 IPv6 默认路由："
     echo "$CURRENT_ROUTE"
-    echo "[INFO] 保留现有默认路由。"
+
+    CURRENT_GW="$(awk '{
+        for (i=1; i<=NF; i++) {
+            if ($i=="via" && i<NF) {
+                print $(i+1)
+                exit
+            }
+        }
+    }' <<< "$CURRENT_ROUTE")"
+
+    if [[ -n "$CURRENT_GW" ]]; then
+        IPV6_GW="$CURRENT_GW"
+        GW_MODE="manual"
+        log "已从现有默认路由提取网关：$IPV6_GW"
+    else
+        # 当前默认路由没有 via，保留 RA 自动获取模式
+        GW_MODE="auto"
+        log "现有默认路由没有明确的 via 网关，保留 RA 自动模式。"
+    fi
 
 else
     echo "[INFO] 当前没有 IPv6 默认路由。"
@@ -203,7 +232,7 @@ else
 
     # 等待 RA 自动下发，最多 30 秒
     for i in $(seq 1 30); do
-        CURRENT_ROUTE="$(ip -6 route show default dev "$NIC" | head -n 1)"
+        CURRENT_ROUTE="$(ip -6 route show default dev "$NIC" | head -n 1 || true)"
 
         if [[ -n "$CURRENT_ROUTE" ]]; then
             break
@@ -216,12 +245,28 @@ else
         echo "[INFO] RA 自动获取成功："
         echo "$CURRENT_ROUTE"
 
+        CURRENT_GW="$(awk '{
+            for (i=1; i<=NF; i++) {
+                if ($i=="via" && i<NF) {
+                    print $(i+1)
+                    exit
+                }
+            }
+        }' <<< "$CURRENT_ROUTE")"
+
+        if [[ -n "$CURRENT_GW" ]]; then
+            IPV6_GW="$CURRENT_GW"
+            GW_MODE="manual"
+            log "已保存 RA 下发的网关：$IPV6_GW"
+        else
+            GW_MODE="auto"
+            log "RA 已提供默认路由，但没有提取到 via 网关。"
+        fi
+
     else
-        echo
-        warn "RA 自动获取 IPv6 默认路由失败。"
+        warn "等待 RA 自动获取 IPv6 默认路由失败。"
         echo "[INFO] 正在检查 IPv6 邻居表中的路由器..."
 
-        # 获取邻居表中标记为 router 的 IPv6 地址
         mapfile -t ALL_ROUTERS < <(
             ip -6 neigh show dev "$NIC" |
             awk '$0 ~ / router / {print $1}' |
@@ -239,8 +284,6 @@ else
             fi
         done
 
-        IPV6_GW=""
-
         # 只有唯一的全局路由器时才自动选择
         if [[ ${#GLOBAL_ROUTERS[@]} -eq 1 ]]; then
             IPV6_GW="${GLOBAL_ROUTERS[0]}"
@@ -251,29 +294,16 @@ else
             IPV6_GW="${LINKLOCAL_ROUTERS[0]}"
         fi
 
-        # 如果成功识别网关，尝试添加默认路由
+        # 尝试使用邻居表发现的网关
         if [[ -n "$IPV6_GW" ]]; then
             echo "[INFO] 从邻居表发现 IPv6 路由器：$IPV6_GW"
 
-            if [[ "${IPV6_GW,,}" == fe80:* ]]; then
-                if ip -6 route replace default via "$IPV6_GW" dev "$NIC"; then
-                    GW_MODE="manual"
-                else
-                    warn "链路本地网关配置失败。"
-                    IPV6_GW=""
-                fi
-            else
-                if ip -6 route replace default via "$IPV6_GW" dev "$NIC" onlink; then
-                    GW_MODE="manual"
-                else
-                    warn "全局 IPv6 网关配置失败。"
-                    IPV6_GW=""
-                fi
-            fi
-
-            if [[ -n "$IPV6_GW" ]]; then
-                CURRENT_ROUTE="$(ip -6 route show default dev "$NIC" | head -n 1)"
+            if set_ipv6_gateway "$IPV6_GW"; then
+                GW_MODE="manual"
                 log "邻居表网关配置成功：$IPV6_GW"
+            else
+                warn "邻居表发现的网关无法配置默认路由。"
+                IPV6_GW=""
             fi
         else
             if [[ ${#GLOBAL_ROUTERS[@]} -gt 1 ||
@@ -284,61 +314,115 @@ else
             fi
         fi
 
-        # 自动识别失败后，允许手动输入或跳过
+        # 自动识别失败后，要求用户决定手动输入或跳过
         if [[ -z "$IPV6_GW" ]]; then
             echo
-            echo "如果 VPS 面板提供了 IPv6 网关，请输入。"
-            echo "如果没有网关信息，可以直接按 Enter 跳过。"
+            echo "请查看 VPS 服务商面板中的 IPv6 Gateway / 网关信息。"
+            echo "例如：2400:8d60:8::1"
+            echo
+            echo "如果暂时没有网关信息，可以直接按 Enter 跳过。"
             echo
 
-            read -r -p "请输入 IPv6 网关地址（直接回车跳过）：" IPV6_GW </dev/tty
+            read -r -p "请输入 IPv6 网关地址（直接回车跳过）：" IPV6_GW </dev/tty || true
 
             if [[ -z "$IPV6_GW" ]]; then
                 GW_MODE="skip"
                 warn "未配置 IPv6 网关，跳过默认路由设置。"
 
             else
-                # 校验 IPv6 网关
-                if ! python3 - "$IPV6_GW" <<'PY'
+                # 校验 IPv6 网关并规范化地址
+                IPV6_GW="$(
+                    python3 - "$IPV6_GW" <<'PY'
 import ipaddress
 import sys
 
 try:
-    ipaddress.IPv6Address(sys.argv[1].split("%")[0])
+    raw = sys.argv[1].split("%")[0]
+    addr = ipaddress.IPv6Address(raw)
+
+    if addr.is_unspecified or addr.is_multicast or addr.is_loopback:
+        raise ValueError("不能使用未指定、多播或回环地址作为网关")
+
+    print(addr.compressed)
+
 except Exception as e:
-    print("IPv6 网关格式错误：", e)
+    print("IPv6 网关格式错误：", e, file=sys.stderr)
     sys.exit(1)
 PY
-                then
-                    fail "IPv6 网关校验失败"
+                )" || fail "IPv6 网关校验失败"
+
+                if ! set_ipv6_gateway "$IPV6_GW"; then
+                    fail "手动配置 IPv6 默认路由失败，请检查网关地址"
                 fi
 
                 GW_MODE="manual"
-
-                if [[ "${IPV6_GW,,}" == fe80:* ]]; then
-                    ip -6 route replace default via "$IPV6_GW" dev "$NIC"
-                else
-                    ip -6 route replace default via "$IPV6_GW" dev "$NIC" onlink
-                fi
-
                 log "手动 IPv6 网关配置完成：$IPV6_GW"
             fi
         fi
     fi
 fi
 
+# 对提取到的现有网关进行格式校验
+if [[ "$GW_MODE" == "manual" ]]; then
+    IPV6_GW="$(
+        python3 - "$IPV6_GW" <<'PY'
+import ipaddress
+import sys
+
+try:
+    raw = sys.argv[1].split("%")[0]
+    addr = ipaddress.IPv6Address(raw)
+
+    if addr.is_unspecified or addr.is_multicast or addr.is_loopback:
+        raise ValueError("不能使用未指定、多播或回环地址作为网关")
+
+    print(addr.compressed)
+
+except Exception as e:
+    print("IPv6 网关格式错误：", e, file=sys.stderr)
+    sys.exit(1)
+PY
+    )" || fail "检测到的 IPv6 网关校验失败"
+fi
+
 # 最终检查
-if [[ "$GW_MODE" != "skip" ]]; then
+if [[ "$GW_MODE" == "manual" ]]; then
+    if [[ -z "$IPV6_GW" ]]; then
+        fail "手动网关模式，但 IPv6 网关地址为空"
+    fi
+
+    # 再次确保默认路由已正确配置
+    if ! set_ipv6_gateway "$IPV6_GW"; then
+        fail "IPv6 默认路由配置失败"
+    fi
+
     if ! ip -6 route show default dev "$NIC" | grep -q '^default'; then
         fail "IPv6 默认路由配置失败，请检查 VPS 网关信息"
     fi
+
+elif [[ "$GW_MODE" == "auto" ]]; then
+    if ! ip -6 route show default dev "$NIC" | grep -q '^default'; then
+        fail "RA 自动模式下没有检测到 IPv6 默认路由"
+    fi
+
+elif [[ "$GW_MODE" == "skip" ]]; then
+    warn "当前选择跳过 IPv6 网关配置。"
+
 else
-    warn "当前没有 IPv6 默认路由，后续 IPv6 公网连通性可能不可用。"
+    fail "未知 IPv6 网关配置模式：$GW_MODE"
+fi
+
+echo
+log "IPv6 网关模式：$GW_MODE"
+
+if [[ -n "$IPV6_GW" ]]; then
+    log "IPv6 网关地址：$IPV6_GW"
 fi
 
 echo
 log "当前 IPv6 默认路由："
 ip -6 route show default || true
+
 
 # ------------------------------------------------------------
 # 8. IPv6 配置持久化
@@ -383,10 +467,10 @@ for i in $(seq 1 30); do
     sleep 1
 done
 
-ip link show dev "$NIC" >/dev/null 2>&1 || {
+if ! ip link show dev "$NIC" >/dev/null 2>&1; then
     echo "[ERROR] 网卡 $NIC 不存在"
     exit 1
-}
+fi
 
 # 启用 IPv6 和 RA
 sysctl -w net.ipv6.conf.all.disable_ipv6=0 >/dev/null
@@ -416,9 +500,8 @@ case "${GW_MODE:-auto}" in
         ;;
 
     auto)
-        echo "[INFO] 使用 RA 自动获取 IPv6 默认路由"
+        echo "[INFO] 等待 RA 自动获取 IPv6 默认路由..."
 
-        # 等待服务商通过 RA 下发默认路由
         for i in $(seq 1 30); do
             if ip -6 route show default dev "$NIC" | grep -q '^default'; then
                 break
@@ -430,7 +513,8 @@ case "${GW_MODE:-auto}" in
             echo "[INFO] 已检测到 IPv6 默认路由"
             ip -6 route show default dev "$NIC"
         else
-            echo "[WARN] 暂未获取到 IPv6 默认路由，继续启动"
+            echo "[ERROR] 等待 RA 超时，未获取到 IPv6 默认路由"
+            exit 1
         fi
         ;;
 
@@ -470,7 +554,6 @@ systemctl daemon-reload
 systemctl enable hy2-ipv6.service
 
 log "IPv6 开机自动恢复配置完成"
-
 
 # ------------------------------------------------------------
 # 9. SSH 端口
