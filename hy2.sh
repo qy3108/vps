@@ -515,6 +515,7 @@ if [[ ! "$USER_COUNT" =~ ^([1-9]|1[0-9]|20)$ ]]; then
 fi
 
 declare -A HY2_USERS
+HY2_USER_SUMMARY=""
 
 for ((i=1; i<=USER_COUNT; i++)); do
     echo
@@ -549,6 +550,7 @@ for ((i=1; i<=USER_COUNT; i++)); do
     done
 
     HY2_USERS["$USERNAME"]="$PASSWORD"
+    HY2_USER_SUMMARY+="${USERNAME}: ${PASSWORD}"$'\n'
 done
 
 log "正在生成 Hy2 配置文件..."
@@ -610,6 +612,7 @@ EOF
 chown root:hysteria "$CERT_DIR/config.yaml"
 chmod 640 "$CERT_DIR/config.yaml"
 
+HY2_USER_NAMES=$(printf '%s\n' "${!HY2_USERS[@]}" | sort)
 unset HY2_USERS PASSWORD USERNAME
 
 log "Hy2 配置文件生成完成，共创建 ${USER_COUNT} 个账号"
@@ -629,7 +632,7 @@ PUB_B64=$(openssl x509 -in "$CERT_CRT" -pubkey -noout \
     | openssl dgst -sha256 -binary \
     | openssl enc -base64)
 
-cat << EOF | tee "$CERT_DIR/fingerprint.txt"
+cat > "$CERT_DIR/fingerprint.txt" << EOF
 通用无冒号指纹 (v2rayN/Shadowrocket/Clash):
 $HEX_FP
 
@@ -681,9 +684,14 @@ rm -f /tmp/hy2-ipv6-result
 # 15. 输出结果
 # ------------------------------------------------------------
 
+
+# ------------------------------------------------------------
+# 15. 输出最终结果
+# ------------------------------------------------------------
+
 echo
 echo "================================================"
-echo "          VPS 初始化完成"
+echo "              VPS 初始化完成"
 echo "================================================"
 
 echo
@@ -704,42 +712,25 @@ echo "TCP ${SSH_PORT}"
 
 echo
 echo "【开放端口】"
-echo "TCP: ${SSH_PORT}, 80, 443, 10085"
-echo "UDP: 10086, 20000-20500"
+echo "TCP: ${SSH_PORT}, 80, 443"
+echo "UDP: ${HY2_PORT}, ${HOP_START}-${HOP_END}"
 
 echo
 echo "【Hy2】"
-echo "安装程序已执行"
 echo "主端口：UDP ${HY2_PORT}"
-echo "证书：${CERT_CRT}"
-echo "私钥：${CERT_KEY}"
+echo "配置文件：$CERT_DIR/config.yaml"
+echo "证书：$CERT_CRT"
+echo "私钥：$CERT_KEY"
+echo "服务状态："
+systemctl is-active hysteria-server.service || true
 
 echo
-echo "【防火墙】"
-echo "原有规则未清空"
-echo "默认策略未修改"
-echo "只添加本脚本指定的端口规则"
+echo "【Hy2 账号数量】"
+echo "$USER_COUNT"
 
 echo
-echo "【Hy2 配置文件】"
-echo "$CERT_DIR/config.yaml"
-echo "账号数量：$USER_COUNT"
-echo "账号用户名："
-echo "$HY2_USER_NAMES"
-
-echo
-echo "【备份目录】"
-echo "$BACKUP_DIR"
-
-echo
-echo "================================================"
-echo "Hy2 服务已启动，并已设置开机自启。"
-echo "================================================"
-
-echo
-echo "=========================================="
-echo "          Hysteria 2 安装完成"
-echo "=========================================="
+echo "【Hy2 账号及密码】"
+echo "$HY2_USER_SUMMARY"
 
 echo
 echo "【通用 SHA256 证书指纹】"
@@ -750,5 +741,20 @@ echo "【sing-box 1.14 公钥 SHA256 指纹】"
 echo "$PUB_B64"
 
 echo
-echo "指纹文件保存位置：$CERT_DIR/fingerprint.txt"
-echo "=========================================="
+echo "【指纹文件】"
+echo "$CERT_DIR/fingerprint.txt"
+
+echo
+echo "【防火墙】"
+echo "原有规则未清空"
+echo "默认策略未修改"
+echo "只添加本脚本指定的端口规则"
+
+echo
+echo "【备份目录】"
+echo "$BACKUP_DIR"
+
+echo
+echo "================================================"
+echo "        Hysteria 2 安装及配置完成"
+echo "================================================"
