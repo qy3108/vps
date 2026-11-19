@@ -505,6 +505,22 @@ chown root:hysteria /etc/hysteria/config.yaml
 chmod 640 /etc/hysteria/config.yaml
 
 # ------------------------------------------------------------
+# 启用 Hy2 开机启动并启动服务
+# ------------------------------------------------------------
+
+log "启用 Hy2 开机启动..."
+
+systemctl enable hysteria-server.service
+
+log "启动 Hy2 服务..."
+
+systemctl restart hysteria-server.service
+
+log "检查 Hy2 服务状态..."
+
+systemctl status hysteria-server.service --no-pager
+
+# ------------------------------------------------------------
 # 14. IPv6 连通性测试
 # ------------------------------------------------------------
 
