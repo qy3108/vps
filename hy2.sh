@@ -180,32 +180,87 @@ ip -6 addr replace "$IPV6_CIDR" dev "$NIC"
 # 7. IPv6 自动获取网关
 # ------------------------------------------------------------
 
-log "检查 IPv6 默认路由..."
 
-HAS_DEFAULT_ROUTE=0
+# ------------------------------------------------------------
+# 7. IPv6 网关：优先自动获取，失败后允许手动输入
+# ------------------------------------------------------------
 
-if ip -6 route show default | grep -q .; then
-    HAS_DEFAULT_ROUTE=1
-    log "发现系统已有 IPv6 默认路由"
+IPV6_GW=""
+GW_MODE="auto"
+
+echo
+echo "============================================"
+echo "          IPv6 网关配置"
+echo "============================================"
+
+# 检查是否已经存在默认路由
+CURRENT_ROUTE="$(ip -6 route show default dev "$NIC" | head -n 1)"
+
+if [[ -n "$CURRENT_ROUTE" ]]; then
+    echo "[INFO] 检测到现有 IPv6 默认路由："
+    echo "$CURRENT_ROUTE"
+    echo
+    echo "默认使用现有自动获取的网关。"
 else
-    log "暂未发现默认路由，等待服务商 RA 自动下发..."
+    echo "[INFO] 当前没有 IPv6 默认路由。"
+    echo
+    echo "正在等待服务商通过 RA 自动下发网关..."
 
     for i in $(seq 1 30); do
-        if ip -6 route show default | grep -q .; then
-            HAS_DEFAULT_ROUTE=1
+        CURRENT_ROUTE="$(ip -6 route show default dev "$NIC" | head -n 1)"
+        if [[ -n "$CURRENT_ROUTE" ]]; then
             break
         fi
         sleep 1
     done
+
+    if [[ -n "$CURRENT_ROUTE" ]]; then
+        echo "[INFO] 自动获取成功："
+        echo "$CURRENT_ROUTE"
+    else
+        echo
+        echo "[WARN] 自动获取 IPv6 网关失败。"
+        echo
+        read -r -p "请输入 VPS 面板提供的 IPv6 网关地址：" IPV6_GW </dev/tty
+
+        [[ -n "$IPV6_GW" ]] || fail "IPv6 网关不能为空"
+
+        # 校验网关地址
+        python3 - "$IPV6_GW" <<'PY'
+import ipaddress
+import sys
+
+try:
+    ipaddress.IPv6Address(sys.argv[1].split("%")[0])
+except Exception as e:
+    print("IPv6 网关格式错误：", e)
+    sys.exit(1)
+PY
+
+        [[ $? -eq 0 ]] || fail "IPv6 网关校验失败"
+
+        GW_MODE="manual"
+
+        # 链路本地网关和全局网关分别处理
+        if [[ "${IPV6_GW,,}" == fe80:* ]]; then
+            ip -6 route replace default via "$IPV6_GW" dev "$NIC"
+        else
+            ip -6 route replace default via "$IPV6_GW" dev "$NIC" onlink
+        fi
+
+        log "手动 IPv6 网关配置完成：$IPV6_GW"
+    fi
 fi
 
-if [[ "$HAS_DEFAULT_ROUTE" -eq 1 ]]; then
-    ip -6 route show default
-else
-    warn "没有检测到 IPv6 默认路由"
-    warn "不会猜测网关，也不会擅自添加 ::1"
-    warn "如果服务商使用静态网关，需要按其网络说明配置"
+# 最终检查
+if ! ip -6 route show default dev "$NIC" | grep -q '^default'; then
+    fail "IPv6 默认路由配置失败，请检查 VPS 网关信息"
 fi
+
+echo
+log "当前 IPv6 默认路由："
+ip -6 route show default
+
 
 # ------------------------------------------------------------
 # 8. IPv6 配置持久化
@@ -226,11 +281,42 @@ sysctl --system >/dev/null
 {
     printf 'NIC=%q\n' "$NIC"
     printf 'IPV6_CIDR=%q\n' "$IPV6_CIDR"
+    printf 'IPV6_GW=%q\n' "$IPV6_GW"
 } > "$IPV6_ENV"
 
 chmod 600 "$IPV6_ENV"
 
-cat > "$IPV6_APPLY" <<'EOF'
+
+#!/usr/bin/env bash
+set -e
+
+source /etc/hy2-ipv6.env
+
+for i in $(seq 1 30); do
+    if ip link show dev "$NIC" >/dev/null 2>&1; then
+        break
+    fi
+    sleep 1
+done
+
+ip link show dev "$NIC" >/dev/null 2>&1 || exit 1
+
+sysctl -w net.ipv6.conf.all.disable_ipv6=0 >/dev/null
+sysctl -w net.ipv6.conf.default.disable_ipv6=0 >/dev/null
+sysctl -w "net.ipv6.conf.${NIC}.disable_ipv6=0" >/dev/null
+sysctl -w "net.ipv6.conf.${NIC}.accept_ra=2" >/dev/null
+
+ip -6 addr replace "$IPV6_CIDR" dev "$NIC"
+
+# 手动网关才需要主动恢复静态默认路由
+if [[ -n "${IPV6_GW:-}" ]]; then
+    if [[ "${IPV6_GW,,}" == fe80:* ]]; then
+        ip -6 route replace default via "$IPV6_GW" dev "$NIC"
+    else
+        ip -6 route replace default via "$IPV6_GW" dev "$NIC" onlink
+    fi
+fi
+
 #!/usr/bin/env bash
 set -e
 
