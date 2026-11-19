@@ -873,24 +873,61 @@ TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
 # 输出两个二维码并排显示
+
 print_qr_pair() {
     local LEFT_FILE="$1"
     local RIGHT_FILE="$2"
     local LEFT_TITLE="$3"
     local RIGHT_TITLE="$4"
-    local QR_WIDTH
 
-    # 去除 ANSI 颜色控制符后计算二维码实际显示宽度
-    QR_WIDTH="$(
-        sed -r 's/\x1B\[[0-9;]*[mK]//g' "$LEFT_FILE" |
-        awk 'NR == 1 { print length($0); exit }'
-    )"
+    [[ -s "$LEFT_FILE" ]] || {
+        echo "[ERROR] 左侧二维码文件为空：$LEFT_FILE"
+        return 1
+    }
 
-    printf "%-*s%s\n" "$((QR_WIDTH + 1))" \
-        "$LEFT_TITLE" "$RIGHT_TITLE"
+    [[ -s "$RIGHT_FILE" ]] || {
+        echo "[ERROR] 右侧二维码文件为空：$RIGHT_FILE"
+        return 1
+    }
 
-    paste -d ' ' "$LEFT_FILE" "$RIGHT_FILE"
+    python3 - "$LEFT_FILE" "$RIGHT_FILE" \
+        "$LEFT_TITLE" "$RIGHT_TITLE" <<'PY'
+import sys
+import re
+
+left_file, right_file, left_title, right_title = sys.argv[1:]
+
+ansi = re.compile(r'\x1b\[[0-?]*[ -/]*[@-~]')
+
+def read_qr(path):
+    with open(path, encoding="utf-8") as f:
+        return f.read().splitlines()
+
+left = read_qr(left_file)
+right = read_qr(right_file)
+
+# 计算左侧二维码实际显示宽度
+def visible_width(line):
+    return len(ansi.sub("", line))
+
+left_width = max((visible_width(line) for line in left), default=0)
+
+# 标题分别放在左右二维码正上方
+print(left_title + " " * max(1, left_width - len(left_title) + 2)
+      + right_title)
+
+# 两边二维码逐行并排显示
+rows = max(len(left), len(right))
+
+for i in range(rows):
+    l = left[i] if i < len(left) else ""
+    r = right[i] if i < len(right) else ""
+
+    padding = max(0, left_width - visible_width(l)) + 2
+    print(l + " " * padding + r)
+PY
 }
+
 
 echo
 echo "================================================"
