@@ -725,6 +725,16 @@ echo "服务状态："
 systemctl is-active hysteria-server.service || true
 
 echo
+echo "【防火墙】"
+echo "原有规则未清空"
+echo "默认策略未修改"
+echo "只添加本脚本指定的端口规则"
+
+echo
+echo "【备份目录】"
+echo "$BACKUP_DIR"
+
+echo
 echo "【Hy2 账号数量】"
 echo "$USER_COUNT"
 
@@ -743,16 +753,6 @@ echo "$PUB_B64"
 echo
 echo "【指纹文件】"
 echo "$CERT_DIR/fingerprint.txt"
-
-echo
-echo "【防火墙】"
-echo "原有规则未清空"
-echo "默认策略未修改"
-echo "只添加本脚本指定的端口规则"
-
-echo
-echo "【备份目录】"
-echo "$BACKUP_DIR"
 
 echo
 echo "================================================"
