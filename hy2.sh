@@ -342,25 +342,6 @@ systemctl daemon-reload
 systemctl enable hy2-ipv6.service
 
 
-chmod 700 "$IPV6_APPLY"
-
-cat > "$IPV6_SERVICE" <<EOF
-[Unit]
-Description=Hy2 IPv6 Address Persistence
-After=network.target systemd-sysctl.service
-
-[Service]
-Type=oneshot
-ExecStart=${IPV6_APPLY}
-RemainAfterExit=yes
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-systemctl daemon-reload
-systemctl enable hy2-ipv6.service
-
 # ------------------------------------------------------------
 # 9. SSH 端口
 # ------------------------------------------------------------
