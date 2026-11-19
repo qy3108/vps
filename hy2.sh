@@ -696,6 +696,9 @@ log "生成 Hy2 证书指纹..."
 HEX_FP=$(openssl x509 -noout -fingerprint -sha256 -in "$CERT_CRT" \
     | cut -d'=' -f2 | tr -d ':' | tr 'A-F' 'a-f')
 
+# 分享链接使用的大写 SHA256 指纹
+HYPER_FP="${HEX_FP^^}"
+
 PUB_B64=$(openssl x509 -in "$CERT_CRT" -pubkey -noout \
     | openssl pkey -pubin -outform der \
     | openssl dgst -sha256 -binary \
@@ -829,6 +832,7 @@ echo "【指纹文件】"
 echo "$CERT_DIR/fingerprint.txt"
 
 
+
 # ------------------------------------------------------------
 # 16. 生成 IPv4 / IPv6 分享链接及二维码
 # ------------------------------------------------------------
@@ -847,6 +851,9 @@ import sys
 print(ipaddress.IPv6Interface(sys.argv[1]).ip.compressed)
 PY
 )"
+
+# 分享链接使用大写 SHA256 指纹
+HYPER_FP="${HEX_FP^^}"
 
 # 检查二维码工具
 command -v qrencode >/dev/null 2>&1 ||
@@ -870,6 +877,7 @@ echo "IPv4：${SERVER_IPV4:-未检测到公网 IPv4}"
 echo "IPv6：${SERVER_IPV6}"
 echo "Hy2 主端口：${HY2_PORT}"
 echo "UDP 跳跃端口：${HOP_START}-${HOP_END}"
+echo "证书指纹：${HYPER_FP}"
 
 # 逐个账号生成链接
 for USERNAME in "${!HY2_USERS[@]}"; do
@@ -881,11 +889,11 @@ for USERNAME in "${!HY2_USERS[@]}"; do
 
         URL_IPV4="$(python3 - \
             "$USERNAME" "$PASSWORD" "$SERVER_IPV4" \
-            "$HY2_PORT" "$HOP_START" "$HOP_END" <<'PY'
+            "$HY2_PORT" "$HOP_START" "$HOP_END" "$HYPER_FP" <<'PY'
 import sys
 from urllib.parse import quote
 
-user, password, host, port, hop_start, hop_end = sys.argv[1:]
+user, password, host, port, hop_start, hop_end, pin = sys.argv[1:]
 
 auth = quote(user, safe="") + ":" + quote(password, safe="")
 remark = quote(user + " IPv4", safe="")
@@ -897,6 +905,7 @@ print(
     f"&upmbps=50"
     f"&downmbps=100"
     f"&keepalive=60"
+    f"&hpkp={pin}"
     f"&fingerprint=Safari26_3"
     f"&mport={hop_start}-{hop_end}"
     f"#{remark}"
@@ -908,7 +917,7 @@ PY
             > "$SHARE_DIR/${USERNAME}-IPv4.txt"
 
         qrencode -o "$SHARE_DIR/${USERNAME}-IPv4.png" \
-            -s 8 -m 2 "$URL_IPV4"
+            -s 4 -m 1 "$URL_IPV4"
 
         qrencode -t ANSIUTF8 "$URL_IPV4" \
             > "$TMP_DIR/${USERNAME}-IPv4.qr"
@@ -917,11 +926,11 @@ PY
     # 生成 IPv6 链接
     URL_IPV6="$(python3 - \
         "$USERNAME" "$PASSWORD" "$SERVER_IPV6" \
-        "$HY2_PORT" "$HOP_START" "$HOP_END" <<'PY'
+        "$HY2_PORT" "$HOP_START" "$HOP_END" "$HYPER_FP" <<'PY'
 import sys
 from urllib.parse import quote
 
-user, password, host, port, hop_start, hop_end = sys.argv[1:]
+user, password, host, port, hop_start, hop_end, pin = sys.argv[1:]
 
 auth = quote(user, safe="") + ":" + quote(password, safe="")
 remark = quote(user + " IPv6", safe="")
@@ -933,6 +942,7 @@ print(
     f"&upmbps=50"
     f"&downmbps=100"
     f"&keepalive=60"
+    f"&hpkp={pin}"
     f"&fingerprint=Safari26_3"
     f"&mport={hop_start}-{hop_end}"
     f"#{remark}"
@@ -944,7 +954,7 @@ PY
         > "$SHARE_DIR/${USERNAME}-IPv6.txt"
 
     qrencode -o "$SHARE_DIR/${USERNAME}-IPv6.png" \
-        -s 8 -m 2 "$URL_IPV6"
+        -s 4 -m 1 "$URL_IPV6"
 
     qrencode -t ANSIUTF8 "$URL_IPV6" \
         > "$TMP_DIR/${USERNAME}-IPv6.qr"
@@ -973,9 +983,16 @@ PY
     echo "================ 二维码扫描 ================"
 
     if [[ -n "$SERVER_IPV4" ]]; then
-        printf "%-38s | %s\n" "IPv4" "IPv6"
-        paste "$TMP_DIR/${USERNAME}-IPv4.qr" \
-              "$TMP_DIR/${USERNAME}-IPv6.qr"
+
+        QR4_WIDTH=$(awk 'NR == 1 { print length($0); exit }' \
+            "$TMP_DIR/${USERNAME}-IPv4.qr")
+
+        # 两个标题分别对齐各自二维码
+        printf "IPv4%*sIPv6\n" "$((QR4_WIDTH - 3))" ""
+
+        paste -d ' ' \
+            "$TMP_DIR/${USERNAME}-IPv4.qr" \
+            "$TMP_DIR/${USERNAME}-IPv6.qr"
     else
         echo "IPv6"
         cat "$TMP_DIR/${USERNAME}-IPv6.qr"
