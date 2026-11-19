@@ -60,6 +60,7 @@ export DEBIAN_FRONTEND=noninteractive
 
 apt-get update
 
+
 apt-get install -y \
     curl \
     wget \
@@ -69,7 +70,9 @@ apt-get install -y \
     iptables \
     iptables-persistent \
     ca-certificates \
-    python3
+    python3 \
+    qrencode
+
 
 unset DEBIAN_FRONTEND
 
@@ -679,7 +682,7 @@ chown root:hysteria "$CERT_DIR/config.yaml"
 chmod 640 "$CERT_DIR/config.yaml"
 
 HY2_USER_NAMES=$(printf '%s\n' "${!HY2_USERS[@]}" | sort)
-unset HY2_USERS PASSWORD USERNAME
+unset PASSWORD USERNAME
 
 log "Hy2 配置文件生成完成，共创建 ${USER_COUNT} 个账号"
 
@@ -824,6 +827,180 @@ echo "$PUB_B64"
 echo
 echo "【指纹文件】"
 echo "$CERT_DIR/fingerprint.txt"
+
+
+# ------------------------------------------------------------
+# 16. 生成 IPv4 / IPv6 分享链接及二维码
+# ------------------------------------------------------------
+
+log "开始生成 Hy2 IPv4 / IPv6 分享链接及二维码..."
+
+# 获取服务器公网 IPv4
+SERVER_IPV4="$(curl -4fsS --connect-timeout 8 --max-time 12 \
+    https://api.ipify.org 2>/dev/null || true)"
+
+# 获取服务器 IPv6
+SERVER_IPV6="$(python3 - "$IPV6_CIDR" <<'PY'
+import ipaddress
+import sys
+
+print(ipaddress.IPv6Interface(sys.argv[1]).ip.compressed)
+PY
+)"
+
+# 检查二维码工具
+command -v qrencode >/dev/null 2>&1 ||
+    fail "未找到 qrencode，请先安装 qrencode"
+
+# 保存目录
+SHARE_DIR="/root/hy2-share"
+mkdir -p "$SHARE_DIR"
+chmod 700 "$SHARE_DIR"
+
+# 临时文件目录
+TMP_DIR="$(mktemp -d)"
+
+echo
+echo "================================================"
+echo "       Hy2 IPv4 / IPv6 分享链接生成"
+echo "================================================"
+
+echo
+echo "IPv4：${SERVER_IPV4:-未检测到公网 IPv4}"
+echo "IPv6：${SERVER_IPV6}"
+echo "Hy2 主端口：${HY2_PORT}"
+echo "UDP 跳跃端口：${HOP_START}-${HOP_END}"
+
+# 逐个账号生成链接
+for USERNAME in "${!HY2_USERS[@]}"; do
+
+    PASSWORD="${HY2_USERS[$USERNAME]}"
+
+    # 生成 IPv4 链接
+    if [[ -n "$SERVER_IPV4" ]]; then
+
+        URL_IPV4="$(python3 - \
+            "$USERNAME" "$PASSWORD" "$SERVER_IPV4" \
+            "$HY2_PORT" "$HOP_START" "$HOP_END" <<'PY'
+import sys
+from urllib.parse import quote
+
+user, password, host, port, hop_start, hop_end = sys.argv[1:]
+
+auth = quote(user, safe="") + ":" + quote(password, safe="")
+remark = quote(user + " IPv4", safe="")
+
+print(
+    f"hysteria2://{auth}@{host}:{port}"
+    f"?peer=bing.com"
+    f"&insecure=1"
+    f"&upmbps=50"
+    f"&downmbps=100"
+    f"&keepalive=60"
+    f"&fingerprint=Safari26_3"
+    f"&mport={hop_start}-{hop_end}"
+    f"#{remark}"
+)
+PY
+)"
+
+        printf '%s\n' "$URL_IPV4" \
+            > "$SHARE_DIR/${USERNAME}-IPv4.txt"
+
+        qrencode -o "$SHARE_DIR/${USERNAME}-IPv4.png" \
+            -s 8 -m 2 "$URL_IPV4"
+
+        qrencode -t ANSIUTF8 "$URL_IPV4" \
+            > "$TMP_DIR/${USERNAME}-IPv4.qr"
+    fi
+
+    # 生成 IPv6 链接
+    URL_IPV6="$(python3 - \
+        "$USERNAME" "$PASSWORD" "$SERVER_IPV6" \
+        "$HY2_PORT" "$HOP_START" "$HOP_END" <<'PY'
+import sys
+from urllib.parse import quote
+
+user, password, host, port, hop_start, hop_end = sys.argv[1:]
+
+auth = quote(user, safe="") + ":" + quote(password, safe="")
+remark = quote(user + " IPv6", safe="")
+
+print(
+    f"hysteria2://{auth}@[{host}]:{port}"
+    f"?peer=bing.com"
+    f"&insecure=1"
+    f"&upmbps=50"
+    f"&downmbps=100"
+    f"&keepalive=60"
+    f"&fingerprint=Safari26_3"
+    f"&mport={hop_start}-{hop_end}"
+    f"#{remark}"
+)
+PY
+)"
+
+    printf '%s\n' "$URL_IPV6" \
+        > "$SHARE_DIR/${USERNAME}-IPv6.txt"
+
+    qrencode -o "$SHARE_DIR/${USERNAME}-IPv6.png" \
+        -s 8 -m 2 "$URL_IPV6"
+
+    qrencode -t ANSIUTF8 "$URL_IPV6" \
+        > "$TMP_DIR/${USERNAME}-IPv6.qr"
+
+    chmod 600 "$SHARE_DIR/${USERNAME}"-*.txt
+    chmod 600 "$SHARE_DIR/${USERNAME}"-*.png
+
+    # 输出账号信息
+    echo
+    echo "================================================"
+    echo "账号：$USERNAME"
+    echo "================================================"
+
+    if [[ -n "$SERVER_IPV4" ]]; then
+        echo
+        echo "【IPv4 分享链接】"
+        echo "$URL_IPV4"
+    fi
+
+    echo
+    echo "【IPv6 分享链接】"
+    echo "$URL_IPV6"
+
+    # 二维码左右并排
+    echo
+    echo "================ 二维码扫描 ================"
+
+    if [[ -n "$SERVER_IPV4" ]]; then
+        printf "%-38s | %s\n" "IPv4" "IPv6"
+        paste "$TMP_DIR/${USERNAME}-IPv4.qr" \
+              "$TMP_DIR/${USERNAME}-IPv6.qr"
+    else
+        echo "IPv6"
+        cat "$TMP_DIR/${USERNAME}-IPv6.qr"
+    fi
+
+    echo
+    echo "【二维码图片】"
+
+    if [[ -n "$SERVER_IPV4" ]]; then
+        echo "$SHARE_DIR/${USERNAME}-IPv4.png"
+    fi
+
+    echo "$SHARE_DIR/${USERNAME}-IPv6.png"
+
+    echo
+done
+
+echo "================================================"
+echo "所有账号的分享链接及二维码生成完成"
+echo "保存目录：$SHARE_DIR"
+echo "================================================"
+
+rm -rf "$TMP_DIR"
+
+unset PASSWORD USERNAME
 
 echo
 echo "================================================"
