@@ -334,7 +334,7 @@ log "添加 IPv6 指定端口规则..."
 
 # SSH
 # SSH TCP 10085
-add_v6_input -p tcp --dport 10085 -j ACCEPT
+# add_v6_input -p tcp --dport 10085 -j ACCEPT
 
 # HTTP / HTTPS
 for PORT in 80 443; do
