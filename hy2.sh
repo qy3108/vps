@@ -832,9 +832,9 @@ echo "【指纹文件】"
 echo "$CERT_DIR/fingerprint.txt"
 
 
-
 # ------------------------------------------------------------
 # 16. 生成 IPv4 / IPv6 分享链接及二维码
+# Apple 小火箭格式 + V2Ray 格式
 # ------------------------------------------------------------
 
 log "开始生成 Hy2 IPv4 / IPv6 分享链接及二维码..."
@@ -850,10 +850,14 @@ import sys
 
 print(ipaddress.IPv6Interface(sys.argv[1]).ip.compressed)
 PY
-)"
+)" || fail "无法获取 IPv6 地址"
 
-# 分享链接使用大写 SHA256 指纹
+# 使用当前证书 SHA256 指纹，大写、无冒号
 HYPER_FP="${HEX_FP^^}"
+
+# 二维码图片尺寸：3 比原来的 4 更小
+QR_SCALE=3
+QR_MARGIN=1
 
 # 检查二维码工具
 command -v qrencode >/dev/null 2>&1 ||
@@ -866,6 +870,27 @@ chmod 700 "$SHARE_DIR"
 
 # 临时文件目录
 TMP_DIR="$(mktemp -d)"
+trap 'rm -rf "$TMP_DIR"' EXIT
+
+# 输出两个二维码并排显示
+print_qr_pair() {
+    local LEFT_FILE="$1"
+    local RIGHT_FILE="$2"
+    local LEFT_TITLE="$3"
+    local RIGHT_TITLE="$4"
+    local QR_WIDTH
+
+    # 去除 ANSI 颜色控制符后计算二维码实际显示宽度
+    QR_WIDTH="$(
+        sed -r 's/\x1B\[[0-9;]*[mK]//g' "$LEFT_FILE" |
+        awk 'NR == 1 { print length($0); exit }'
+    )"
+
+    printf "%-*s%s\n" "$((QR_WIDTH + 1))" \
+        "$LEFT_TITLE" "$RIGHT_TITLE"
+
+    paste -d ' ' "$LEFT_FILE" "$RIGHT_FILE"
+}
 
 echo
 echo "================================================"
@@ -877,14 +902,23 @@ echo "IPv4：${SERVER_IPV4:-未检测到公网 IPv4}"
 echo "IPv6：${SERVER_IPV6}"
 echo "Hy2 主端口：${HY2_PORT}"
 echo "UDP 跳跃端口：${HOP_START}-${HOP_END}"
-echo "证书指纹：${HYPER_FP}"
+echo "证书 SHA256 指纹：${HYPER_FP}"
 
 # 逐个账号生成链接
 for USERNAME in "${!HY2_USERS[@]}"; do
 
     PASSWORD="${HY2_USERS[$USERNAME]}"
 
-    # 生成 IPv4 链接
+    echo
+    echo "================================================"
+    echo "账号：$USERNAME"
+    echo "================================================"
+
+    # ========================================================
+    # 1. Apple 小火箭格式
+    # ========================================================
+
+    # IPv4
     if [[ -n "$SERVER_IPV4" ]]; then
 
         URL_IPV4="$(python3 - \
@@ -911,19 +945,19 @@ print(
     f"#{remark}"
 )
 PY
-)"
+)" || fail "Apple IPv4 分享链接生成失败"
 
         printf '%s\n' "$URL_IPV4" \
             > "$SHARE_DIR/${USERNAME}-IPv4.txt"
 
         qrencode -o "$SHARE_DIR/${USERNAME}-IPv4.png" \
-            -s 4 -m 1 "$URL_IPV4"
+            -s "$QR_SCALE" -m "$QR_MARGIN" "$URL_IPV4"
 
         qrencode -t ANSIUTF8 "$URL_IPV4" \
             > "$TMP_DIR/${USERNAME}-IPv4.qr"
     fi
 
-    # 生成 IPv6 链接
+    # IPv6
     URL_IPV6="$(python3 - \
         "$USERNAME" "$PASSWORD" "$SERVER_IPV6" \
         "$HY2_PORT" "$HOP_START" "$HOP_END" "$HYPER_FP" <<'PY'
@@ -948,64 +982,162 @@ print(
     f"#{remark}"
 )
 PY
-)"
+)" || fail "Apple IPv6 分享链接生成失败"
 
     printf '%s\n' "$URL_IPV6" \
         > "$SHARE_DIR/${USERNAME}-IPv6.txt"
 
     qrencode -o "$SHARE_DIR/${USERNAME}-IPv6.png" \
-        -s 4 -m 1 "$URL_IPV6"
+        -s "$QR_SCALE" -m "$QR_MARGIN" "$URL_IPV6"
 
     qrencode -t ANSIUTF8 "$URL_IPV6" \
         > "$TMP_DIR/${USERNAME}-IPv6.qr"
 
-    chmod 600 "$SHARE_DIR/${USERNAME}"-*.txt
-    chmod 600 "$SHARE_DIR/${USERNAME}"-*.png
-
-    # 输出账号信息
     echo
-    echo "================================================"
-    echo "账号：$USERNAME"
-    echo "================================================"
-
+    echo "【Apple 小火箭 IPv4 分享链接】"
     if [[ -n "$SERVER_IPV4" ]]; then
-        echo
-        echo "【IPv4 分享链接】"
         echo "$URL_IPV4"
+    else
+        echo "未检测到公网 IPv4，跳过"
     fi
 
     echo
-    echo "【IPv6 分享链接】"
+    echo "【Apple 小火箭 IPv6 分享链接】"
     echo "$URL_IPV6"
 
-    # 二维码左右并排
     echo
-    echo "================ 二维码扫描 ================"
+    echo "【Apple 小火箭二维码】"
 
     if [[ -n "$SERVER_IPV4" ]]; then
-
-        QR4_WIDTH=$(awk 'NR == 1 { print length($0); exit }' \
-            "$TMP_DIR/${USERNAME}-IPv4.qr")
-
-        # 两个标题分别对齐各自二维码
-        printf "IPv4%*sIPv6\n" "$((QR4_WIDTH - 3))" ""
-
-        paste -d ' ' \
+        print_qr_pair \
             "$TMP_DIR/${USERNAME}-IPv4.qr" \
-            "$TMP_DIR/${USERNAME}-IPv6.qr"
+            "$TMP_DIR/${USERNAME}-IPv6.qr" \
+            "IPv4" "IPv6"
     else
         echo "IPv6"
         cat "$TMP_DIR/${USERNAME}-IPv6.qr"
     fi
 
-    echo
-    echo "【二维码图片】"
+    # ========================================================
+    # 2. V2Ray 格式
+    # ========================================================
 
+    # IPv4
     if [[ -n "$SERVER_IPV4" ]]; then
-        echo "$SHARE_DIR/${USERNAME}-IPv4.png"
+
+        URL_V2RAY_IPV4="$(python3 - \
+            "$USERNAME" "$PASSWORD" "$SERVER_IPV4" \
+            "$HY2_PORT" "$HOP_START" "$HOP_END" "$HYPER_FP" <<'PY'
+import sys
+from urllib.parse import quote
+
+user, password, host, port, hop_start, hop_end, pin = sys.argv[1:]
+
+# 按示例格式将用户名和密码之间的冒号编码为 %3A
+auth = quote(user + ":" + password, safe="")
+remark = quote(user + " IPv4", safe="")
+
+print(
+    f"hysteria2://{auth}@{host}:{port}"
+    f"?security=tls"
+    f"&insecure=1"
+    f"&mport={hop_start}-{hop_end}"
+    f"&pinSHA256={pin}"
+    f"&sni=bing.com"
+    f"#{remark}"
+)
+PY
+)" || fail "V2Ray IPv4 分享链接生成失败"
+
+        printf '%s\n' "$URL_V2RAY_IPV4" \
+            > "$SHARE_DIR/${USERNAME}-V2Ray-IPv4.txt"
+
+        qrencode -o "$SHARE_DIR/${USERNAME}-V2Ray-IPv4.png" \
+            -s "$QR_SCALE" -m "$QR_MARGIN" "$URL_V2RAY_IPV4"
+
+        qrencode -t ANSIUTF8 "$URL_V2RAY_IPV4" \
+            > "$TMP_DIR/${USERNAME}-V2Ray-IPv4.qr"
     fi
 
-    echo "$SHARE_DIR/${USERNAME}-IPv6.png"
+    # IPv6
+    URL_V2RAY_IPV6="$(python3 - \
+        "$USERNAME" "$PASSWORD" "$SERVER_IPV6" \
+        "$HY2_PORT" "$HOP_START" "$HOP_END" "$HYPER_FP" <<'PY'
+import sys
+from urllib.parse import quote
+
+user, password, host, port, hop_start, hop_end, pin = sys.argv[1:]
+
+auth = quote(user + ":" + password, safe="")
+remark = quote(user + " IPv6", safe="")
+
+print(
+    f"hysteria2://{auth}@[{host}]:{port}"
+    f"?security=tls"
+    f"&insecure=1"
+    f"&mport={hop_start}-{hop_end}"
+    f"&pinSHA256={pin}"
+    f"&sni=bing.com"
+    f"#{remark}"
+)
+PY
+)" || fail "V2Ray IPv6 分享链接生成失败"
+
+    printf '%s\n' "$URL_V2RAY_IPV6" \
+        > "$SHARE_DIR/${USERNAME}-V2Ray-IPv6.txt"
+
+    qrencode -o "$SHARE_DIR/${USERNAME}-V2Ray-IPv6.png" \
+        -s "$QR_SCALE" -m "$QR_MARGIN" "$URL_V2RAY_IPV6"
+
+    qrencode -t ANSIUTF8 "$URL_V2RAY_IPV6" \
+        > "$TMP_DIR/${USERNAME}-V2Ray-IPv6.qr"
+
+    # ========================================================
+    # 3. 输出 V2Ray 链接和二维码
+    # ========================================================
+
+    echo
+    echo "【V2Ray IPv4 分享链接】"
+    if [[ -n "$SERVER_IPV4" ]]; then
+        echo "$URL_V2RAY_IPV4"
+    else
+        echo "未检测到公网 IPv4，跳过"
+    fi
+
+    echo
+    echo "【V2Ray IPv6 分享链接】"
+    echo "$URL_V2RAY_IPV6"
+
+    echo
+    echo "【V2Ray 二维码】"
+
+    if [[ -n "$SERVER_IPV4" ]]; then
+        print_qr_pair \
+            "$TMP_DIR/${USERNAME}-V2Ray-IPv4.qr" \
+            "$TMP_DIR/${USERNAME}-V2Ray-IPv6.qr" \
+            "IPv4" "IPv6"
+    else
+        echo "IPv6"
+        cat "$TMP_DIR/${USERNAME}-V2Ray-IPv6.qr"
+    fi
+
+    # ========================================================
+    # 4. 文件权限
+    # ========================================================
+
+    chmod 600 "$SHARE_DIR/${USERNAME}"-*.txt
+    chmod 600 "$SHARE_DIR/${USERNAME}"-*.png
+
+    echo
+    echo "【二维码图片文件】"
+
+    if [[ -n "$SERVER_IPV4" ]]; then
+        echo "Apple IPv4：$SHARE_DIR/${USERNAME}-IPv4.png"
+        echo "V2Ray IPv4：$SHARE_DIR/${USERNAME}-V2Ray-IPv4.png"
+    fi
+
+    echo "Apple IPv6：$SHARE_DIR/${USERNAME}-IPv6.png"
+    echo "V2Ray IPv6：$SHARE_DIR/${USERNAME}-V2Ray-IPv6.png"
 
     echo
 done
@@ -1014,8 +1146,6 @@ echo "================================================"
 echo "所有账号的分享链接及二维码生成完成"
 echo "保存目录：$SHARE_DIR"
 echo "================================================"
-
-rm -rf "$TMP_DIR"
 
 unset PASSWORD USERNAME
 
