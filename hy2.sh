@@ -505,6 +505,32 @@ chown root:hysteria /etc/hysteria/config.yaml
 chmod 640 /etc/hysteria/config.yaml
 
 # ------------------------------------------------------------
+# 生成并保存 Hy2 证书指纹
+# ------------------------------------------------------------
+
+log "生成 Hy2 证书指纹..."
+
+HEX_FP=$(openssl x509 -noout -fingerprint -sha256 -in "$CERT_CRT" \
+    | cut -d'=' -f2 | tr -d ':' | tr 'A-F' 'a-f')
+
+PUB_B64=$(openssl x509 -in "$CERT_CRT" -pubkey -noout \
+    | openssl pkey -pubin -outform der \
+    | openssl dgst -sha256 -binary \
+    | openssl enc -base64)
+
+cat << EOF | tee "$CERT_DIR/fingerprint.txt"
+通用无冒号指纹 (v2rayN/Shadowrocket/Clash):
+$HEX_FP
+
+sing-box 1.14 专用指纹 (certificate_public_key_sha256):
+$PUB_B64
+EOF
+
+chmod 644 "$CERT_DIR/fingerprint.txt"
+
+log "证书指纹已保存至 $CERT_DIR/fingerprint.txt"
+
+# ------------------------------------------------------------
 # 启用 Hy2 开机启动并启动服务
 # ------------------------------------------------------------
 
@@ -596,3 +622,20 @@ echo
 echo "================================================"
 echo "请检查 Hy2 配置后，再启动服务。"
 echo "================================================"
+
+echo
+echo "=========================================="
+echo "          Hysteria 2 安装完成"
+echo "=========================================="
+
+echo
+echo "【通用 SHA256 证书指纹】"
+echo "$HEX_FP"
+
+echo
+echo "【sing-box 1.14 公钥 SHA256 指纹】"
+echo "$PUB_B64"
+
+echo
+echo "指纹文件保存位置：$CERT_DIR/fingerprint.txt"
+echo "=========================================="
