@@ -378,11 +378,33 @@ echo "[INFO] IPv6 默认路由恢复完成"
 ip -6 route show default
 EOF
 
+
 chmod 700 "$IPV6_APPLY"
 
+# 生成 systemd 服务文件（之前遗漏了这一段）
+cat > "$IPV6_SERVICE" <<EOF
+[Unit]
+Description=Hy2 IPv6 Address Persistence
+Wants=network-online.target
+After=network-online.target systemd-sysctl.service
 
+[Service]
+Type=oneshot
+ExecStart=${IPV6_APPLY}
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# 重新加载 systemd 并启用 IPv6 恢复服务
 systemctl daemon-reload
 systemctl enable hy2-ipv6.service
+systemctl restart hy2-ipv6.service
+
+# 检查服务状态
+systemctl status hy2-ipv6.service --no-pager
+
 
 log "IPv6 开机自动恢复配置完成"
 
