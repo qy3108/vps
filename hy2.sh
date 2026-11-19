@@ -480,6 +480,9 @@ log "Hy2 安装程序执行完毕"
 log "生成 Hysteria 2 自签证书..."
 
 mkdir -p "$CERT_DIR"
+
+# 设置 Hy2 配置目录权限
+chown root:hysteria "$CERT_DIR"
 chmod 750 "$CERT_DIR"
 
 # 如果已有证书，先备份
@@ -513,6 +516,9 @@ fi
 
 chmod 600 "$CERT_KEY"
 chmod 644 "$CERT_CRT"
+# 设置 Hy2 配置文件权限，确保 hysteria 用户可以读取
+chown root:hysteria /etc/hysteria/config.yaml
+chmod 640 /etc/hysteria/config.yaml
 
 # ------------------------------------------------------------
 # 14. IPv6 连通性测试
