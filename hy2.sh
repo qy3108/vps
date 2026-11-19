@@ -76,22 +76,62 @@ apt-get install -y \
 
 unset DEBIAN_FRONTEND
 
+
 # ------------------------------------------------------------
 # 3. 自动识别网卡
 # ------------------------------------------------------------
 
-DEFAULT_NIC="$(ip -4 route show default 2>/dev/null |
-    awk 'NR==1 {print $5}')"
+log "正在自动识别 IPv4 网卡..."
 
-if [[ -z "$DEFAULT_NIC" ]]; then
-    DEFAULT_NIC="$(ip -6 route show default 2>/dev/null |
-        awk 'NR==1 {print $5}')"
+# 优先识别 IPv4 默认路由对应的网卡
+NIC="$(ip -4 route show default 2>/dev/null |
+    awk 'NR==1 {
+        for (i=1; i<=NF; i++) {
+            if ($i=="dev") {
+                print $(i+1)
+                exit
+            }
+        }
+    }')"
+
+# 检查该网卡是否具有全局 IPv4 地址
+if [[ -n "$NIC" ]] &&
+   ! ip -o -4 addr show dev "$NIC" scope global 2>/dev/null | grep -q 'inet '; then
+    NIC=""
 fi
 
-if [[ -z "$DEFAULT_NIC" ]]; then
-    DEFAULT_NIC="$(ip -o link show |
-        awk -F': ' '$2 != "lo" {print $2; exit}')"
+# 如果没有找到，尝试识别系统中唯一的全局 IPv4 网卡
+if [[ -z "$NIC" ]]; then
+    mapfile -t IPV4_NICS < <(
+        ip -o -4 addr show scope global 2>/dev/null |
+        awk '{print $2}' |
+        sort -u
+    )
+
+    if [[ "${#IPV4_NICS[@]}" -eq 1 ]]; then
+        NIC="${IPV4_NICS[0]}"
+    elif [[ "${#IPV4_NICS[@]}" -gt 1 ]]; then
+        echo "[ERROR] 检测到多个具有全局 IPv4 地址的网卡："
+        printf '  %s\n' "${IPV4_NICS[@]}"
+        fail "无法唯一确定 IPv4 网卡，请检查 VPS 网络配置"
+    else
+        fail "未检测到具有全局 IPv4 地址的网卡"
+    fi
 fi
+
+# 最终检查网卡是否存在
+ip link show dev "$NIC" >/dev/null 2>&1 ||
+    fail "识别出的网卡 ${NIC} 不存在"
+
+# 获取该网卡的 IPv4 地址
+NIC_IPV4="$(ip -o -4 addr show dev "$NIC" scope global |
+    awk 'NR==1 {
+        split($4, a, "/")
+        print a[1]
+    }')"
+
+[[ -n "$NIC_IPV4" ]] ||
+    fail "网卡 ${NIC} 没有可用的全局 IPv4 地址"
 
 echo
 echo "============================================"
@@ -99,17 +139,9 @@ echo "        VPS IPv6 + Hy2 自动安装"
 echo "============================================"
 echo
 
-if [[ -n "$DEFAULT_NIC" ]]; then
-    read -r -p "检测到网卡 ${DEFAULT_NIC}，直接回车确认，或输入其他网卡名称：" INPUT_NIC </dev/tty
-    NIC="${INPUT_NIC:-$DEFAULT_NIC}"
-else
-    read -rp "请输入网卡名称：" NIC
-fi
-
-ip link show dev "$NIC" >/dev/null 2>&1 ||
-    fail "网卡 ${NIC} 不存在"
-
-log "使用网卡：$NIC"
+log "自动识别网卡成功"
+log "网卡名称：$NIC"
+log "IPv4 地址：$NIC_IPV4"
 
 # ------------------------------------------------------------
 # 4. 输入 IPv6 地址
