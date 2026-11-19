@@ -2,6 +2,12 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+# 检查交互终端
+if [[ ! -r /dev/tty || ! -w /dev/tty ]]; then
+    echo "[ERROR] 无法访问交互终端，请使用 SSH 终端运行脚本"
+    exit 1
+fi
+
 # ============================================================
 # Debian VPS 自动初始化
 # IPv6 + 指定防火墙端口 + Hysteria 2 + 自签证书
@@ -91,7 +97,7 @@ echo "============================================"
 echo
 
 if [[ -n "$DEFAULT_NIC" ]]; then
-    read -rp "检测到网卡 ${DEFAULT_NIC}，直接回车确认，或输入其他网卡名称：" INPUT_NIC
+    read -r -p "检测到网卡 ${DEFAULT_NIC}，直接回车确认，或输入其他网卡名称：" INPUT_NIC </dev/tty
     NIC="${INPUT_NIC:-$DEFAULT_NIC}"
 else
     read -rp "请输入网卡名称：" NIC
@@ -107,7 +113,7 @@ log "使用网卡：$NIC"
 # ------------------------------------------------------------
 
 echo
-read -rp "请输入 VPS 分配的 IPv6 地址：" IPV6_INPUT
+read -r -p "请输入 VPS 分配的 IPv6 地址：" IPV6_INPUT </dev/tty
 
 [[ -n "$IPV6_INPUT" ]] || fail "IPv6 地址不能为空"
 
